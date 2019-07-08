@@ -234,7 +234,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0c0359307f108214fa7f019386a8b150, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  Webcam: {fileID: 0}
+  Webcam: {fileID: 211247800}
 --- !u!114 &211247800
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -330,9 +330,9 @@ MonoBehaviour:
   m_OnClick:
     m_PersistentCalls:
       m_Calls:
-      - m_Target: {fileID: 211247794}
-        m_MethodName: 
-        m_Mode: 6
+      - m_Target: {fileID: 211247799}
+        m_MethodName: TakePhoto
+        m_Mode: 1
         m_Arguments:
           m_ObjectArgument: {fileID: 0}
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
