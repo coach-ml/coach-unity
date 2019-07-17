@@ -12,7 +12,7 @@ namespace Utilities
 
         public void Start()
         {
-            StartCoroutine(SetupWebcam());
+            // StartCoroutine(SetupWebcam());
         }
 
         public Texture2D GetPhoto()
