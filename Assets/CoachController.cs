@@ -4,6 +4,7 @@ using UnityEngine;
 using Utilities;
 using Barracuda;
 using UnityEngine.UI;
+using System.Linq;
 
 public class CoachController : MonoBehaviour
 {
@@ -11,6 +12,9 @@ public class CoachController : MonoBehaviour
     private Tensor Output { get; set; }
 
     public RawImage Image;
+    public string[] Labels = new string[] {
+        ""
+    };
 
     public void TakePhoto()
     {
@@ -31,7 +35,17 @@ public class CoachController : MonoBehaviour
 
         // Get the output
         Output = Worker.Fetch("softmax_input/Softmax");
-        Debug.LogWarning(Output[0]);
+
+        var results = new Dictionary<string, float>();
+        for (var i = 0; i < Labels.Length; i++)
+        {
+            results.Add(Labels[i], Output[i]);
+        }
+        results.OrderByDescending(key => key.Value);
+
+        foreach (var r in results) {
+            Debug.Log(r.Key + ": " + r.Value);
+        }
     }
 
 
