@@ -57,6 +57,8 @@ namespace Coach
 
         public CoachResult(string[] labels, Tensor output)
         {
+            Results = new List<LabelProbability>();
+
             for (var i = 0; i < labels.Length; i++)
             {
                 string label = labels[i];
@@ -69,6 +71,8 @@ namespace Coach
                 });
             }
             SortedResults = Results.OrderByDescending(r => r.Confidence).ToList();
+
+            output.Dispose();
         }
 
         public LabelProbability Best()
@@ -155,10 +159,10 @@ namespace Coach
 
             // Await execution
             Worker.Execute(inputs);
+            imageTensor.Dispose();
 
             // Get the output
             var output = Worker.Fetch(outputName);
-            output.Dispose();
 
             return new CoachResult(Labels, output);
         }

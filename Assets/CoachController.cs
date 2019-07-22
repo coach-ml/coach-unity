@@ -21,9 +21,10 @@ public class CoachController : MonoBehaviour
     // Start is called before the first frame update
     async void Start()
     {
-        var coach = await new CoachClient().Login("");
-        await coach.CacheModel("flowers", skipMatch: false);
+        // var coach = await new CoachClient().Login("");
+        // await coach.CacheModel("flowers", skipMatch: false);
 
+        var coach = new CoachClient();
         Model = coach.GetModel("flowers");
     }
 
