@@ -5,61 +5,30 @@ using Utilities;
 using Barracuda;
 using UnityEngine.UI;
 using System.Linq;
+using Coach;
 
 public class CoachController : MonoBehaviour
 {
-    private IWorker Worker { get; set; }
-    private Tensor Output { get; set; }
-
     public RawImage Image;
-    public string[] Labels = new string[] {
-        ""
-    };
-
+    private CoachModel Model { get; set; }
     public void TakePhoto()
     {
-        const int INPUT_SIZE = 224;
-
-        var inputs = new Dictionary<string, Tensor>();
-
-        Texture2D image = Image.texture as Texture2D;
-        Tensor imageTensor = new Tensor(image);
-        imageTensor = imageTensor.Reshape(
-            new TensorShape(1, INPUT_SIZE, INPUT_SIZE, 3)
-        );
-
-        inputs.Add("lambda_input_input", imageTensor);
-
-        // Await execution
-        Worker.Execute(inputs);
-
-        // Get the output
-        Output = Worker.Fetch("softmax_input/Softmax");
-
-        var results = new Dictionary<string, float>();
-        for (var i = 0; i < Labels.Length; i++)
-        {
-            results.Add(Labels[i], Output[i]);
-        }
-        results.OrderByDescending(key => key.Value);
-
-        foreach (var r in results) {
-            Debug.Log(r.Key + ": " + r.Value);
-        }
+        var results = Model.Predict(Image.texture as Texture2D);
+        var best = results.Best();
+        Debug.Log(best.Label + ": " + best.Confidence);
     }
 
-
     // Start is called before the first frame update
-    void Start()
+    async void Start()
     {
-        // Load the model and spawn the worker
-        var model = ModelLoader.LoadFromStreamingAssets("flowers.bytes");
-        Worker = BarracudaWorkerFactory.CreateWorker(BarracudaWorkerFactory.Type.Compute, model);
+        var coach = await new CoachClient().Login("");
+        await coach.CacheModel("flowers", skipMatch: false);
+
+        Model = coach.GetModel("flowers");
     }
 
     void Destroy() {
-        Output.Dispose();
-        Worker.Dispose();
+        Model.CleanUp();
     }
 
     // Update is called once per frame

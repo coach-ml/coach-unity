@@ -36,7 +36,7 @@ namespace Coach
         public static Texture2D TextureFromBytes(byte[] input)
         {
             Texture2D tex = new Texture2D(0, 0);
-            tex.LoadImage(input); //..this will auto-resize the texture dimensions.
+            tex.LoadImage(input);
 
             return tex;
         }
@@ -113,6 +113,11 @@ namespace Coach
             this.ImageDims = new ImageDims(size, 0, 1);
         }
 
+        private Tensor ReadTensorFromTexture(Texture2D texture)
+        {
+            return ImageUtil.TensorFromTexture(texture, this.ImageDims);
+        }
+
         private Tensor ReadTensorFromBytes(byte[] image)
         {
             var texture = ImageUtil.TextureFromBytes(image);
@@ -125,28 +130,34 @@ namespace Coach
             return ImageUtil.TensorFromTexture(texture, this.ImageDims);
         }
 
+        public CoachResult Predict(Texture2D texture, string inputName = "input", string outputName = "output")
+        {
+            var imageTensor = ReadTensorFromTexture(texture);
+            return GetModelResult(imageTensor, inputName, outputName);
+        }
+
         public CoachResult Predict(string image, string inputName = "input", string outputName = "output")
         {
             var imageTensor = ReadTensorFromFile(image);
-            return GetGraphResult(imageTensor, inputName, outputName);
+            return GetModelResult(imageTensor, inputName, outputName);
         }
 
         public CoachResult Predict(byte[] image, string inputName = "input", string outputName = "output")
         {
             var imageTensor = ReadTensorFromBytes(image);
-            return GetGraphResult(imageTensor, inputName, outputName);
+            return GetModelResult(imageTensor, inputName, outputName);
         }
 
-        private CoachResult GetGraphResult(Tensor imageTensor, string inputName = "input", string outputName = "output")
+        private CoachResult GetModelResult(Tensor imageTensor, string inputName = "input", string outputName = "output")
         {
             var inputs = new Dictionary<string, Tensor>();
-            inputs.Add("input", imageTensor);
+            inputs.Add(inputName, imageTensor);
 
             // Await execution
             Worker.Execute(inputs);
 
             // Get the output
-            var output = Worker.Fetch("output");
+            var output = Worker.Fetch(outputName);
             output.Dispose();
 
             return new CoachResult(Labels, output);
@@ -272,7 +283,7 @@ namespace Coach
 
             var baseUrl = $"https://la41byvnkj.execute-api.us-east-1.amazonaws.com/prod/{this.Profile.Bucket}/model-bin?object=trained/{modelName}/{version}/model";
 
-            var modelFile = "frozen.pb";
+            var modelFile = "unity.bytes";
             var modelUrl = $"{baseUrl}/{modelFile}";
 
             var request = new HttpClient();
