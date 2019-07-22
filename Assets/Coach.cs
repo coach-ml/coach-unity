@@ -5,7 +5,6 @@ using System.Net.Http;
 using System.IO;
 using System.Linq;
 using System.Text;
-using Newtonsoft.Json;
 using System.Collections.Generic;
 using UnityEngine;
 using Barracuda;
@@ -173,25 +172,43 @@ namespace Coach
         }
     }
 
-    public struct ModelDef
+    [Serializable]
+    public class ModelDef
     {
-        public string name { get; set; }
-        public string status { get; set; }
-        public int version { get; set; }
-        public string module { get; set; }
-        public string[] labels { get; set; }
-        public float coachVersion { get; set; }
+        public string name;
+        public string status;
+        public int version;
+        public string module;
+        public string[] labels;
+        public float coachVersion;
+
+        public static ModelDef FromJson(string jsonString)
+        {
+            return JsonUtility.FromJson<ModelDef>(jsonString);
+        }
+        public string ToJson()
+        {
+            return JsonUtility.ToJson(this);
+        }
     }
 
+    [Serializable]
     public class Profile
     {
-        [JsonProperty("id")]
-        public string Id { get; set; }
-        [JsonProperty("bucket")]
-        public string Bucket { get; set; }
+        public string id;
+        public string bucket;
 
-        [JsonProperty("models")]
-        public ModelDef[] Models { get; set; }
+        public ModelDef[] models;
+
+        public static Profile FromJson(string jsonString)
+        {
+            return JsonUtility.FromJson<Profile>(jsonString);
+        }
+
+        public string ToJson()
+        {
+            return JsonUtility.ToJson(this);
+        }
     }
 
     public enum ModelType
@@ -229,7 +246,8 @@ namespace Coach
 
         private ModelDef ReadManifest(string path)
         {
-            return JsonConvert.DeserializeObject<ModelDef>(File.ReadAllText(path));
+            var json = File.ReadAllText(path);
+            return ModelDef.FromJson(json);
         }
 
         private async Task<Profile> GetProfile()
@@ -244,7 +262,7 @@ namespace Coach
             response.EnsureSuccessStatusCode();
 
             string responseBody = await response.Content.ReadAsStringAsync();
-            var profile = JsonConvert.DeserializeObject<Profile>(responseBody);
+            var profile = Profile.FromJson(responseBody);
             return profile;
         }
 
@@ -253,7 +271,7 @@ namespace Coach
             if (!IsAuthenticated())
                 throw new Exception("User is not authenticated");
 
-            ModelDef model = this.Profile.Models.Single(m => m.name == modelName);
+            ModelDef model = this.Profile.models.Single(m => m.name == modelName);
             int version = model.version;
 
             string modelDir = Path.Combine(path, modelName);
@@ -282,10 +300,10 @@ namespace Coach
             }
 
             // Write downloaded manifest
-            var json = JsonConvert.SerializeObject(model);
+            var json = model.ToJson();
             File.WriteAllText(profileManifest, json);
 
-            var baseUrl = $"https://la41byvnkj.execute-api.us-east-1.amazonaws.com/prod/{this.Profile.Bucket}/model-bin?object=trained/{modelName}/{version}/model";
+            var baseUrl = $"https://la41byvnkj.execute-api.us-east-1.amazonaws.com/prod/{this.Profile.bucket}/model-bin?object=trained/{modelName}/{version}/model";
 
             var modelFile = "unity.bytes";
             var modelUrl = $"{baseUrl}/{modelFile}";
