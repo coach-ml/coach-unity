@@ -1,16 +1,78 @@
 using System;
-using System.Net.Http.Headers;
 using System.Threading.Tasks;
-using System.Net.Http;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Collections.Generic;
 using UnityEngine;
 using Barracuda;
+using UnityEngine.Networking;
+using System.Net;
 
 namespace Coach
 {
+    static class UnityWebRequestExtensions
+    {
+        public static bool IsSuccessStatusCode(this UnityWebRequest webRequest)
+        {
+            return !webRequest.isHttpError && !webRequest.isNetworkError;
+        }
+
+        public static HttpStatusCode StatusCode(this UnityWebRequest webRequest)
+        {
+            return (HttpStatusCode)webRequest.responseCode;
+        }
+
+        public static Task SendWebRequestAsync(this UnityWebRequest webRequest)
+        {
+            var op = webRequest.SendWebRequest();
+            var source = new TaskCompletionSource<UnityWebRequest>();
+            op.completed += (_) =>
+            {
+                source.SetResult(webRequest);
+            };
+            return source.Task;
+        }
+    }
+
+    public static class Networking
+    {
+        public static async Task<byte[]> GetContentAsync(string url, string authHeader)
+        {
+            UnityWebRequest webRequest = new UnityWebRequest(url, "GET");
+            webRequest.downloadHandler = new DownloadHandlerBuffer();
+            webRequest.SetRequestHeader("X-Api-Key", authHeader);
+            webRequest.SetRequestHeader("Accept", "");
+            webRequest.SetRequestHeader("Content-Type", "application/octet-stream");
+
+            await webRequest.SendWebRequestAsync();
+
+            if (webRequest.IsSuccessStatusCode())
+            {
+                var content = webRequest.downloadHandler.data;
+                return content;
+            }
+
+            throw new Exception("Request failed");
+
+        }
+        public static async Task<string> GetTextAsync(string url, string authHeader)
+        {
+            UnityWebRequest webRequest = new UnityWebRequest(url, "GET");
+            webRequest.downloadHandler = new DownloadHandlerBuffer();
+            webRequest.SetRequestHeader("X-Api-Key", authHeader);
+
+            await webRequest.SendWebRequestAsync();
+
+            if (webRequest.IsSuccessStatusCode())
+            {
+                var content = webRequest.downloadHandler.text;
+                return content;
+            }
+
+            throw new Exception("Request failed");
+        }
+    }
+
     public struct ImageDims
     {
         public int InputSize { get; set; }
@@ -255,19 +317,19 @@ namespace Coach
             var id = this.ApiKey.Substring(0, 5);
             var url = $"https://2hhn1oxz51.execute-api.us-east-1.amazonaws.com/prod/{id}";
 
-            var request = new HttpClient();
-            request.DefaultRequestHeaders.Add("X-Api-Key", this.ApiKey);
+            var responseBody = await Networking.GetTextAsync(url, ApiKey);
 
-            var response = await request.GetAsync(url);
-            response.EnsureSuccessStatusCode();
-
-            string responseBody = await response.Content.ReadAsStringAsync();
             var profile = Profile.FromJson(responseBody);
             return profile;
         }
 
         public async Task CacheModel(string modelName, string path = ".", bool skipMatch = true, ModelType modelType = ModelType.Frozen)
         {
+            if (path == ".")
+            {
+                path = Application.streamingAssetsPath;
+            }
+
             if (!IsAuthenticated())
                 throw new Exception("User is not authenticated");
 
@@ -308,18 +370,10 @@ namespace Coach
             var modelFile = "unity.bytes";
             var modelUrl = $"{baseUrl}/{modelFile}";
 
-            var request = new HttpClient();
-            request.DefaultRequestHeaders.Add("X-Api-Key", this.ApiKey);
-            request.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/octet-stream"));
-
-            var requestMessage = new HttpRequestMessage(HttpMethod.Get, modelUrl);
-            requestMessage.Content = new StringContent(String.Empty, Encoding.UTF8, "application/octet-stream");
-
-            var response = await request.SendAsync(requestMessage);
-            response.EnsureSuccessStatusCode();
-
-            byte[] modelBytes = await response.Content.ReadAsByteArrayAsync();
-            File.WriteAllBytes(Path.Combine(path, modelName, modelFile), modelBytes);
+            byte[] modelBytes = await Networking.GetContentAsync(modelUrl, ApiKey);
+            
+            var writePath = Path.Combine(path, modelName, modelFile);
+            File.WriteAllBytes(writePath, modelBytes);
         }
 
         public CoachModel GetModel(string path)

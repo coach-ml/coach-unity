@@ -1,10 +1,5 @@
-﻿using System.Collections;
-using System.Collections.Generic;
-using UnityEngine;
-using Utilities;
-using Barracuda;
+﻿using UnityEngine;
 using UnityEngine.UI;
-using System.Linq;
 using Coach;
 
 public class CoachController : MonoBehaviour
@@ -21,10 +16,10 @@ public class CoachController : MonoBehaviour
     // Start is called before the first frame update
     async void Start()
     {
-        // var coach = await new CoachClient().Login("");
-        // await coach.CacheModel("flowers", skipMatch: false);
+        var coach = await new CoachClient().Login("A2botdrxAn68aZh8Twwwt2sPBJdCfH3zO02QDMt0");
+        await coach.CacheModel("flowers");
 
-        var coach = new CoachClient();
+        // var coach = new CoachClient();
         Model = coach.GetModel("flowers");
     }
 
