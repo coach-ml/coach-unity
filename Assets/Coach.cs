@@ -376,10 +376,15 @@ namespace Coach
             File.WriteAllBytes(writePath, modelBytes);
         }
 
-        public CoachModel GetModel(string path)
+        public CoachModel GetModel(string modelName, string path = ".")
         {
-            var modelPath = Path.Combine(path, "unity.bytes");
-            var labelPath = Path.Combine(path, "manifest.json");
+            if (path == ".")
+            {
+                path = Application.streamingAssetsPath;
+            }
+
+            var modelPath = Path.Combine(path, modelName, "unity.bytes");
+            var labelPath = Path.Combine(path, modelName, "manifest.json");
 
             // Load the model
             Model model = ModelLoader.LoadFromStreamingAssets(modelPath);
