@@ -462,6 +462,11 @@ namespace Coach
 
         public async Task<CoachModel> GetModelRemote(string modelName, string path = ".")
         {
+            if (path == ".")
+            {
+                path = Application.streamingAssetsPath;
+            }
+
             await CacheModel(modelName, path);
             return GetModel(Path.Combine(modelName, path));
         }
