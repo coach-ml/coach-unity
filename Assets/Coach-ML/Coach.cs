@@ -176,7 +176,14 @@ namespace Coach
 
     public class CoachResult
     {
+        ///<summary>
+        //Unsorted prediction results
+        ///</summary>
         public List<LabelProbability> Results { get; private set; }
+        
+        ///<summary>
+        //Sorted prediction results, descending in Confidence
+        ///</summary>
         public List<LabelProbability> SortedResults { get; private set; }
 
         public CoachResult(string[] labels, Tensor output)
@@ -199,11 +206,17 @@ namespace Coach
             output.Dispose();
         }
 
+        ///<summary>
+        ///Most Confident result
+        ///</summary>
         public LabelProbability Best()
         {
             return SortedResults.FirstOrDefault();
         }
 
+        ///<summary>
+        ///Least Confident result
+        ///</summary>
         public LabelProbability Worst()
         {
             return SortedResults.LastOrDefault();
@@ -218,13 +231,19 @@ namespace Coach
 
     public class CoachModel
     {
-        private readonly float COACH_VERSION = 1f;
+        private readonly float COACH_VERSION = 2f;
 
         private string[] Labels { get; set; }
         private ImageDims ImageDims { get; set; }
 
         private IWorker Worker { get; set; }
 
+        ///<summary>
+        ///<param>Model graph</param>
+        ///<param>Model labels</param>
+        ///<param>Base module used for training</param>
+        ///<param>Model SDK version</param>
+        ///</summary>
         public CoachModel(Model model, string[] labels, string module, float coachVersion)
         {
             if (COACH_VERSION != coachVersion)
@@ -257,18 +276,36 @@ namespace Coach
             return ImageUtil.TensorFromTexture(texture, this.ImageDims);
         }
 
+        ///<summary>
+        ///Parses the specified Texture2D as a Tensor and runs it through the loaded model
+        ///<param>Path to the sample image</param>
+        ///<param>Name of the input in the graph</param>
+        ///<param>Name of the output in the graph</param>
+        ///</summary>
         public CoachResult Predict(Texture2D texture, string inputName = "input", string outputName = "output")
         {
             var imageTensor = ReadTensorFromTexture(texture);
             return GetModelResult(imageTensor, inputName, outputName);
         }
 
+        ///<summary>
+        ///Parses the specified image from path as a Tensor and runs it through the loaded model
+        ///<param>Path to the sample image</param>
+        ///<param>Name of the input in the graph</param>
+        ///<param>Name of the output in the graph</param>
+        ///</summary>
         public CoachResult Predict(string image, string inputName = "input", string outputName = "output")
         {
             var imageTensor = ReadTensorFromFile(image);
             return GetModelResult(imageTensor, inputName, outputName);
         }
 
+        ///<summary>
+        ///Parses the specified image bytes as a Tensor and runs it through the loaded model
+        ///<param>Image as byte array</param>
+        ///<param>Name of the input in the graph</param>
+        ///<param>Name of the output in the graph</param>
+        ///</summary>
         public CoachResult Predict(byte[] image, string inputName = "input", string outputName = "output")
         {
             var imageTensor = ReadTensorFromBytes(image);
@@ -346,11 +383,18 @@ namespace Coach
         private Profile Profile { get; set; }
         private string ApiKey { get; set; }
 
+        ///<summary>
+        ///<para>If true, additional logs will be displayed</para>
+        ///</summary>
         public CoachClient(bool isDebug = false)
         {
             this.IsDebug = isDebug;
         }
 
+        ///<summary>
+        ///Authenticates with Coach service and allows for model caching. Accepts API Key as its only parameter
+        ///<param>Your API key</param>
+        ///</summary>
         public async Task<CoachClient> Login(string apiKey)
         {
             if (apiKey == String.Empty)
@@ -385,11 +429,18 @@ namespace Coach
             return profile;
         }
 
-        public async Task CacheModel(string modelName, string path = ".", bool skipMatch = true, ModelType modelType = ModelType.Frozen)
+        ///<summary>
+        ///Downloads model from Coach service to disk
+        ///<param>Name of model</param>
+        ///<param>Path to cache model</param>
+        ///<param>If true, the download will be skipped if the model of the same filename already exists</param>
+        ///<param>The type of model to be cached, default is Unity</param>
+        ///</summary>
+        public async Task CacheModel(string modelName, string path = ".", bool skipMatch = true, ModelType modelType = ModelType.Unity)
         {
             if (path == ".")
             {
-                path = Application.streamingAssetsPath;
+                path = Application.persistentDataPath;
             }
 
             if (!IsAuthenticated())
@@ -429,7 +480,19 @@ namespace Coach
 
             var baseUrl = $"https://la41byvnkj.execute-api.us-east-1.amazonaws.com/prod/{this.Profile.bucket}/model-bin?object=trained/{modelName}/{version}/model";
 
-            var modelFile = "unity.bytes";
+            string modelFile = String.Empty;
+            if (modelType == ModelType.Frozen)
+            {
+                modelFile = "frozen.pb";
+            } else if (modelType == ModelType.Unity)
+            {
+                modelFile = "unity.bytes";
+
+            } else if (modelType == ModelType.Mobile)
+            {
+                modelFile = "mobile.tflite";
+            }
+
             var modelUrl = $"{baseUrl}/{modelFile}";
 
             byte[] modelBytes = await Networking.GetContentAsync(modelUrl, ApiKey);
@@ -438,15 +501,14 @@ namespace Coach
             File.WriteAllBytes(writePath, modelBytes);
         }
 
-        public CoachModel GetModel(string modelName, string path = ".")
+        ///<summary>
+        ///Loads model into memory
+        ///<param>Path to the model</param>
+        ///</summary>
+        public CoachModel GetModel(string path)
         {
-            if (path == ".")
-            {
-                path = Application.streamingAssetsPath;
-            }
-
-            var modelPath = Path.Combine(path, modelName, "unity.bytes");
-            var labelPath = Path.Combine(path, modelName, "manifest.json");
+            var modelPath = Path.Combine(path, "unity.bytes");
+            var labelPath = Path.Combine(path, "manifest.json");
 
             // Load the model
             Model model = ModelLoader.LoadFromStreamingAssets(modelPath);
@@ -460,15 +522,20 @@ namespace Coach
             return new CoachModel(model, labels, baseModule, coachVersion);
         }
 
+        ///<summary>
+        ///Downloads model from Coach service to disk, and loads it into memory
+        ///<param>Name of model</param>
+        ///<param>Path to cache the model. Application.persistentDataPath by default</param>
+        ///</summary>
         public async Task<CoachModel> GetModelRemote(string modelName, string path = ".")
         {
             if (path == ".")
             {
-                path = Application.streamingAssetsPath;
+                path = Application.persistentDataPath;
             }
 
             await CacheModel(modelName, path);
-            return GetModel(Path.Combine(modelName, path));
+            return GetModel(Path.Combine(path, modelName));
         }
     }
 }
