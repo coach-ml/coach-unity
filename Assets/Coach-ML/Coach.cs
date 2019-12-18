@@ -7,7 +7,6 @@ using UnityEngine;
 using Barracuda;
 using UnityEngine.Networking;
 using System.Net;
-using UnityEngine.Serialization;
 
 namespace Coach
 {
@@ -100,25 +99,27 @@ namespace Coach
         private static Texture2D Scale(this Texture2D tex, int width, int height, FilterMode mode = FilterMode.Trilinear)
         {
             Rect texR = new Rect(0, 0, width, height);
-            GpuScale(tex, width, height, mode);
+            RenderTexture rt = GpuScale(tex, width, height, mode);
 
             // Update new texture
             tex.Resize(width, height);
             tex.ReadPixels(texR, 0, 0, true);
             tex.Apply(true);
 
+            RenderTexture.ReleaseTemporary(rt);
+
             return tex;
         }
 
         // Internal unility that renders the source texture into the RTT - the scaling method itself.
-        private static void GpuScale(Texture2D src, int width, int height, FilterMode fmode)
+        private static RenderTexture GpuScale(Texture2D src, int width, int height, FilterMode fmode)
         {
             //We need the source texture in VRAM because we render with it
             src.filterMode = fmode;
             src.Apply(true);
 
             //Using RTT for best quality and performance. Thanks, Unity 5
-            RenderTexture rtt = new RenderTexture(width, height, 32);
+            var rtt = RenderTexture.GetTemporary(width, height, 32);
 
             //Set the RTT in order to render to it
             Graphics.SetRenderTarget(rtt);
@@ -129,6 +130,8 @@ namespace Coach
             //Then clear & draw the texture to fill the entire RTT.
             GL.Clear(true, true, new Color(0, 0, 0, 0));
             Graphics.DrawTexture(new Rect(0, 0, 1, 1), src);
+
+            return rtt;
         }
 
         private static Tensor ToTensor(this Texture2D tex, ImageDims dims)
@@ -180,30 +183,29 @@ namespace Coach
         ///<summary>
         //Unsorted prediction results
         ///</summary>
-        public List<LabelProbability> Results { get; private set; }
+        public LabelProbability[] Results { get; private set; }
 
         ///<summary>
         //Sorted prediction results, descending in Confidence
         ///</summary>
-        // public List<LabelProbability> SortedResults { get; private set; }
+        public LabelProbability[] SortedResults { get; private set; }
 
         public CoachResult(string[] labels, Tensor output)
         {
-            Debug.LogWarning(output);
-            Results = new List<LabelProbability>();
+            Results = new LabelProbability[labels.Length];
 
             for (var i = 0; i < labels.Length; i++)
             {
                 string label = labels[i];
                 float probability = output[i];
 
-                Results.Add(new LabelProbability()
+                Results[i] = new LabelProbability()
                 {
                     Label = label,
                     Confidence = probability
-                });
+                };
             }
-            // SortedResults = Results.OrderByDescending(r => r.Confidence).ToList();
+            SortedResults = Results.OrderByDescending(r => r.Confidence).ToArray();
 
             output.Dispose();
         }
@@ -213,7 +215,7 @@ namespace Coach
         ///</summary>
         public LabelProbability Best()
         {
-            return Results.FirstOrDefault();
+            return SortedResults.FirstOrDefault();
         }
 
         ///<summary>
@@ -221,7 +223,19 @@ namespace Coach
         ///</summary>
         public LabelProbability Worst()
         {
-            return Results.LastOrDefault();
+            return SortedResults.LastOrDefault();
+        }
+    }
+
+    public struct CumulativeConfidenceResult
+    {
+        public float Threshhold;
+        public CoachResult LastResult;
+        public float CumulativeConfidence;
+
+        public bool IsPassedThreshold()
+        {
+            return CumulativeConfidence >= Threshhold;
         }
     }
 
@@ -314,6 +328,18 @@ namespace Coach
             return GetModelResult(imageTensor, inputName, outputName);
         }
 
+        public void CumulativeConfidence(Texture2D image, float threshhold, ref CumulativeConfidenceResult result)
+        {
+            var prediction = Predict(image);
+            result.LastResult = prediction;
+            result.Threshhold = threshhold;
+
+            if (result.LastResult.Best().Label != prediction.Best().Label)
+                result.CumulativeConfidence = 0;
+            else if (result.CumulativeConfidence <= threshhold)
+                result.CumulativeConfidence += prediction.Best().Confidence;
+        }
+
         private CoachResult GetModelResult(Tensor imageTensor, string inputName = "input", string outputName = "output")
         {
             var inputs = new Dictionary<string, Tensor>();
@@ -338,10 +364,7 @@ namespace Coach
     [Serializable]
     public class StatusDef
     {
-        [FormerlySerializedAs("short")]
         public string _short;
-
-        [FormerlySerializedAs("long")]
         public string _long;
     }
 
@@ -349,7 +372,7 @@ namespace Coach
     public class ModelDef
     {
         public string name;
-        public StatusDef status;
+        // public StatusDef status;
         public int version;
         public string module;
         public string[] labels;
@@ -456,7 +479,10 @@ namespace Coach
             if (!IsAuthenticated())
                 throw new Exception("User is not authenticated");
 
-            ModelDef model = this.Profile.models.Single(m => m.name == modelName);
+            ModelDef model = this.Profile.models.SingleOrDefault(m => m.name == modelName);
+            if (model == null)
+                throw new Exception($"{modelName} is an invalid model");
+
             int version = model.version;
 
             string modelDir = Path.Combine(path, modelName);
