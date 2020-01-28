@@ -14,8 +14,8 @@ namespace Barracuda
         static ComputeInfo()
         {
             supportsCompute = SystemInfo.supportsComputeShaders;
+            // TODO switch to SystemInfo.maxComputeWorkGroupSize when we bump min spec to 2019.3
 
-            // SystemInfo.maxComputeWorkGroupSize is incorrect
             if (Application.platform == RuntimePlatform.Android)
             {
                 maxComputeWorkGroupSize = (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan) ? 256u : 128u;
