@@ -51,7 +51,7 @@ public class ComputeTensorData : ITensorData
 #endif
     }
 
-    protected ComputeTensorData(ComputeBuffer buffer, TensorShape shape, int offset, string buffername)
+    public ComputeTensorData(ComputeBuffer buffer, TensorShape shape, int offset, string buffername)
     {
         name = buffername;
         m_Buffer = buffer;
@@ -97,32 +97,51 @@ public class ComputeTensorData : ITensorData
         Assert.IsTrue(offset + count <= data.Length);
 
         m_Buffer.SetData(data, offset, m_Offset, count);
-        #if UNITY_2018
+        m_AsyncDownloadSchedulingFrame = -1;
+        #if UNITY_2018_2_OR_NEWER
         m_AsyncDownloadRequested = false;
         #endif
     }
 
-    #if UNITY_2018
-    private bool m_AsyncDownloadRequested = false;
-    private AsyncGPUReadbackRequest m_AsyncDownloadRequest;
     public virtual bool ScheduleAsyncDownload(int count)
     {
-        if (!SystemInfo.supportsAsyncGPUReadback)
-            return true;
+        #if UNITY_2018_2_OR_NEWER
+        if (SystemInfo.supportsAsyncGPUReadback)
+            return WaitForAsyncReadback(count);
+        #endif
+
+        return WaitFor3Frames(count);
+    }
+
+    private int m_AsyncDownloadSchedulingFrame = -1;
+    private bool WaitFor3Frames(int count)
+    {
+        if (m_AsyncDownloadSchedulingFrame < 0)
+            m_AsyncDownloadSchedulingFrame = Time.frameCount;
+        var framesPassed = Time.frameCount - m_AsyncDownloadSchedulingFrame;
+        return framesPassed > 3;
+    }
+
+    #if UNITY_2018_2_OR_NEWER
+    private bool m_AsyncDownloadRequested = false;
+    private AsyncGPUReadbackRequest m_AsyncDownloadRequest;
+    private bool WaitForAsyncReadback(int count)
+    {
+        if (m_AsyncDownloadRequested)
+        {
+            if (m_AsyncDownloadRequest.hasError)
+                m_AsyncDownloadRequested = false;
+            else
+                m_AsyncDownloadRequest.Update();
+        }
 
         if (!m_AsyncDownloadRequested)
         {
-            m_AsyncDownloadRequest = AsyncGPUReadback.Request(m_Buffer);
+            m_AsyncDownloadRequest = AsyncGPUReadback.Request(m_Buffer, count * sizeof(float), m_Offset * sizeof(float));
             m_AsyncDownloadRequested = true;
         }
-        else
-            m_AsyncDownloadRequest.Update();
+
         return m_AsyncDownloadRequest.done;
-    }
-    #else
-    public virtual bool ScheduleAsyncDownload(int count)
-    {
-        return true;
     }
     #endif
 
@@ -136,15 +155,23 @@ public class ComputeTensorData : ITensorData
         Assert.IsTrue(GetMaxCount() >= count);
         count = Math.Min(GetMaxCount(), count);
 
-        #if UNITY_2018
+        m_AsyncDownloadSchedulingFrame = -1;
+        #if UNITY_2018_2_OR_NEWER
         if (m_AsyncDownloadRequested)
         {
             m_AsyncDownloadRequested = false;
-            m_AsyncDownloadRequest.WaitForCompletion();
-            Profiler.EndSample();
+            if (!m_AsyncDownloadRequest.done)
+                m_AsyncDownloadRequest.WaitForCompletion();
 
             if (!m_AsyncDownloadRequest.hasError)
-                return m_AsyncDownloadRequest.GetData<float>().ToArray();
+            {
+                var reqData = m_AsyncDownloadRequest.GetData<float>().ToArray();
+                if (reqData.Length >= count)
+                { // if we have retrieved enough data
+                    Profiler.EndSample();
+                    return reqData;
+                }
+            }
         }
         #endif
 
@@ -612,9 +639,9 @@ public class ReferenceComputeOps : ReferenceCPUOps
             var srcChannelMask = TextureFormatUtils.FormatToChannelMask(tex, texData.interpretPixelAsChannels);
 
             fn.SetTexture("X", tex);
-            fn.shader.SetInts("_Pool", new int [] {tex.width, tex.height, 1, 1});
+            fn.shader.SetInts("_Pool", new int [] {tex.width, tex.height});
             fn.shader.SetInts("_Pad", offsets);
-            fn.shader.SetInts("_Stride", new [] {(int)srcChannelMask[0], (int)srcChannelMask[1], (int)srcChannelMask[2], (int)srcChannelMask[3] });
+            fn.shader.SetInts("_ChannelWriteMask", new [] {(int)srcChannelMask[0], (int)srcChannelMask[1], (int)srcChannelMask[2], (int)srcChannelMask[3] });
 
             fn.Dispatch(texData.shape.width, texData.shape.height, texDepth);
 
@@ -666,9 +693,30 @@ public class ReferenceComputeOps : ReferenceCPUOps
         return Dispatch(fn, O, O.flatWidth, O.flatHeight, 1);
     }
 
-    static public int IDivC(int v, int div)
+    static protected int IDivC(int v, int div)
     {
         return (v + div - 1) / div;
+    }
+
+    private Tensor Conv2DWinograd(Tensor X, Tensor K, Tensor B, int[] stride, int[] pad)
+    {
+        Assert.AreEqual(X.channels, K.kernelDepth);
+        Assert.AreEqual(K.kernelCount, B.flatWidth);
+        Assert.AreEqual(B.flatWidth, B.length);
+        Assert.AreEqual(stride.Length, 2);
+        Assert.AreEqual(pad.Length, 4);
+
+        var O = X.shape.ApplyKernel(K.shape, stride, pad);
+
+        var fn = new ComputeFunc(m_Kernels, "Conv2DWinograd_2x2_3x3");
+
+        SetTensor(fn, "X", X);
+        SetTensor(fn, "K", K);
+        SetTensor(fn, "B", B);
+
+        fn.shader.SetInts("_Pad", pad);
+
+        return Dispatch(fn, O, K.kernelCount, IDivC(O.width, 2), IDivC(O.height, 2));
     }
 
     public override Tensor Conv2D(Tensor X, Tensor K, Tensor B, int[] stride, int[] pad)
@@ -681,21 +729,12 @@ public class ReferenceComputeOps : ReferenceCPUOps
 
         var O = X.shape.ApplyKernel(K.shape, stride, pad);
 
-        bool useWinograd = (K.width == 3) && (K.height == 3) && (stride[0] == 1); // only 3x3 kernel
-             useWinograd = useWinograd && (stride[0] == 1) && (pad[0] == 0) && (pad[0] == 0); // no support for padding and stride
+        bool useWinograd = (K.kernelWidth == 3) && (K.kernelHeight == 3) && (stride[0] == 1) && (stride[1] == 1) && ((O.height % 2) == 0) && ((O.width % 2) == 0);
         if( useWinograd )
         {
-            var fnw = new ComputeFunc(m_Kernels, "Conv2DWinograd_2x2_3x3");
-            SetTensor(fnw, "X", X);
-            SetTensor(fnw, "K", K);
-            SetTensor(fnw, "B", B);
-            fnw.shader.SetInts("_Stride", stride);
-            fnw.shader.SetInts("_Pad", pad);
-
-            var ow = Dispatch(fnw, O, K.kernelCount, IDivC(O.width,2), IDivC(O.height,2));
-            return ow;
+            return Conv2DWinograd(X, K, B, stride, pad);
         }
-        
+
         var fn = new ComputeFunc(m_Kernels, "Conv2D");
 
         SetTensor(fn, "X", X);
@@ -788,14 +827,13 @@ public class ReferenceComputeOps : ReferenceCPUOps
         SetTensor(fn, "X", X);
 
         fn.shader.SetInts("_Pad", pad);
-        fn.shader.SetInts("_Stride", X.shape.ToArray());
 
         if (kernelName == "Border2D")
         {
             // NOTE: negative "pad" variable will crop X tensor
             int croppedWidth = X.width - Math.Max(0, -pad[2]);
             int croppedHeight = X.height - Math.Max(0, -pad[3]);
-            var croppedSize = new int[] { 0, 0, 0, 0 };
+            var croppedSize = new int[] { 0, 0 };
             croppedSize[0] = croppedWidth;
             croppedSize[1] = croppedHeight;
 
@@ -1080,6 +1118,24 @@ public class ReferenceComputeOps : ReferenceCPUOps
         return result;
     }
 
+    public override Tensor Gather(Tensor[] tensors, int axis)
+    {
+        Tensor X = tensors[0];
+        Tensor indices = tensors[1];
+
+        int[] shape = X.shape.ToArray();
+        shape[axis] = indices.flatWidth;
+
+        var O = new TensorShape(shape);
+
+        var fn = new ComputeFunc(m_Kernels, "Gather");
+        SetTensor(fn, "X", X);
+        SetTensor(fn, "K", indices);
+        fn.shader.SetInts("_Axis", axis);
+
+        return Dispatch(fn, O, O.channels, O.width, O.height);
+    }
+
     public virtual Tensor ElementwiseWithBroadcast(string kernelName, Tensor[] tensors)
     {
         var O = TensorExtensions.MaxShape(tensors);
@@ -1217,6 +1273,29 @@ public class ReferenceComputeOps : ReferenceCPUOps
     public override Tensor ReduceProd(Tensor X, int axis)
     {
     	return Reduce("ReduceProd", X, axis);
+    }
+    
+    protected override Tensor CopyAndReshape(Tensor X, TensorShape newShape)
+    {
+        var copyShape = X.shape;
+        Assert.AreEqual(copyShape.length, newShape.length);
+
+        var fn = new ComputeFunc(m_Kernels, "Copy");
+        SetTensor(fn, "X", X);
+
+        // NOTE: "Copy" kernel copies tensor data while preserving the shape
+        // However here in CopyAndReshape we want to both copy and change the shape,
+        // To be able to piggyback "Copy" kernel we specify new shape when allocating destination tensor,
+        // but use shape identical to source when copying.
+
+        var O = NewTensor(newShape, "O");
+        fn.SetTensor("O", copyShape, Pin(O).buffer);
+
+        var offsets = new int[] { 0,0,0,0 };
+        fn.shader.SetInts("_Pad", offsets);
+        fn.Dispatch(X.channels, X.width, X.height);
+
+        return O;
     }
 
     public override Tensor Prepare(Tensor X)

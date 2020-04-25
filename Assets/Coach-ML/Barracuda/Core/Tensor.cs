@@ -50,13 +50,16 @@ public struct TensorShape
         channels = ch > 0 ? ch : 1;
     }
     /// <summary>
-    /// Create a TensorShape of arbitrary shape.
-    /// `shape` parameter should be of length 4.
+    /// Create a TensorShape of arbitrary `shape`.
+    /// Currently `shape` can have only up to 4 dimensions.
     /// </summary>
     public TensorShape(int[] shape)
-        : this(shape[0], shape[1], shape[2], shape[3])
+        : this(
+            shape.Length > 0 ? shape[0] : 0,
+            shape.Length > 1 ? shape[1] : 0,
+            shape.Length > 2 ? shape[2] : 0,
+            shape.Length > 3 ? shape[3] : 0)
     {
-        Assert.AreEqual(4, shape.Length);
     }
     #endregion
 
@@ -266,11 +269,19 @@ public class Tensor : IDisposable
     private ITensorAllocator m_TensorAllocator;
     private float[] m_Cache;
     private bool m_CacheIsDirty;
+    private bool m_Disposed = false;
 
+    #region Debug 
     /// <summary>
     /// Return this tensor name.
     /// </summary>
     public string name;
+    /// <summary>
+    /// Return if tensor was already disposed.
+    /// </summary>
+    internal bool disposed { get { return m_Disposed; } }
+    #endregion
+
     /// <summary>
     /// Return this tensor allocator, see interface `ITensorAllocator`.
     /// </summary>
@@ -354,7 +365,7 @@ public class Tensor : IDisposable
     /// </summary>
     public Tensor(int b, int ch, float[] srcData, string n = "") : this(new TensorShape(b, ch), srcData, n) {}
     /// <summary>
-    /// Create a Tensor of shape tensorShape `s`, an array of data `srcData` and an optional name `n`
+    /// Create a Tensor of shape `s`, an array of data `srcData` and an optional name `n`
     /// `srcData` should be of size `s.length`.
     /// </summary>
     public Tensor(TensorShape s, float[] srcData, string n = "")
@@ -385,7 +396,7 @@ public class Tensor : IDisposable
     /// </summary>
     public Tensor(int b, int ch, float[][] srcData, string n = "") : this(new TensorShape(b, ch), srcData, n) {}
     /// <summary>
-    /// Create a Tensor of shape tensorShape `s`, an array of data `srcData` and an optional name `n`
+    /// Create a Tensor of shape `s`, an array of data `srcData` and an optional name `n`
     /// `srcData` should be of size `s.length`.
     /// </summary>
     public Tensor(TensorShape s, float[][] srcData, string n = "")
@@ -405,6 +416,40 @@ public class Tensor : IDisposable
         m_Cache = null;
         m_CacheIsDirty = false;
     }
+    /// <summary>
+    /// Create a Tensor from a shape `s`, associated ComputeBuffer `srcBuffer` filled with tensor values, and an optional name `n`
+    /// `s` should be of size 4, order is [b,h,w,ch].
+    /// `srcBuffer` should be larger than s[0]*s[1]*s[2]*s[3].
+    /// </summary>
+    public Tensor(int[] s, UnityEngine.ComputeBuffer srcBuffer, string n = "") : this(new TensorShape(s), srcBuffer, n) {}
+    /// <summary>
+    /// Create a Tensor of shape [b,h,w,ch], associated ComputeBuffer `srcBuffer` filled with tensor values, and an optional name `n`
+    /// `srcBuffer` should be larger than b*h*w*ch
+    /// </summary>
+    public Tensor(int b, int h, int w, int ch, UnityEngine.ComputeBuffer srcBuffer, string n = "") : this(new TensorShape(b, h, w, ch), srcBuffer, n) {}
+    /// <summary>
+    /// Create a Tensor of shape [b,1,1,ch], associated ComputeBuffer `srcBuffer` filled with tensor values, and an optional name `n`
+    /// `srcBuffer` should be larger than b*ch
+    /// </summary>
+    public Tensor(int b, int ch, UnityEngine.ComputeBuffer srcBuffer, string n = "") : this(new TensorShape(b, ch), srcBuffer, n) {}
+    /// <summary>
+    /// Create a Tensor of shape `s`, associated ComputeBuffer `srcBuffer` filled with tensor values, and an optional name `n`
+    /// `srcBuffer` should be larger than `s.length`.
+    /// </summary>
+    public Tensor(TensorShape s, UnityEngine.ComputeBuffer srcBuffer, string n = "")
+    {
+        name = n;
+        shape = s;
+        if (srcBuffer.count < s.length)
+            throw new ArgumentException($"Compute buffer `{name}` capacity is {srcBuffer.count} less than {s.length} required for shape {s}");
+        if (srcBuffer.stride != 4)
+            throw new ArgumentException($"Currently only compute buffers with stride of 4 are supported. Compute buffer `{name}` stride is {srcBuffer.stride} instead");
+        m_TensorOnDevice = new ComputeTensorData(srcBuffer, shape, offset:0, name);
+        m_TensorAllocator = null;
+        m_Cache = null;
+        m_CacheIsDirty = false;
+    }
+
     /// <summary>
     /// Create a Tensor from a texture, shape is [1, texture.height, texture.width, `channels=3`]
     /// </summary>
@@ -441,7 +486,7 @@ public class Tensor : IDisposable
     /// </summary>
     public Tensor(int b, int ch, ITensorData d, string n = "") : this(new TensorShape(b, ch), d, n) {}
     /// <summary>
-    /// Create a Tensor of shape tensorShape `s`, a ITensorData `d` and an optional name `n`
+    /// Create a Tensor of shape `s`, a ITensorData `d` and an optional name `n`
     /// </summary>
     public Tensor(TensorShape s, ITensorData d, string n = "")
     {
@@ -470,7 +515,7 @@ public class Tensor : IDisposable
     /// </summary>
     public Tensor(int b, int ch, string n = "") : this(new TensorShape(b, ch), n) {}
     /// <summary>
-    /// Create an uninitialized Tensor of shape tensorShape `s`.
+    /// Create an uninitialized Tensor of shape `s`.
     /// </summary>
     public Tensor(TensorShape s, string n = "")
     {
@@ -497,7 +542,7 @@ public class Tensor : IDisposable
     /// </summary>
     public Tensor(int b, int ch, ITensorData d, ITensorAllocator a) : this(new TensorShape(b, ch), d, a) {}
     /// <summary>
-    /// Create a Tensor of shape tensorShape `s`, a ITensorData `d` and a ITensorAllocator `a`
+    /// Create a Tensor of shape `s`, a ITensorData `d` and a ITensorAllocator `a`
     /// </summary>
     public Tensor(TensorShape s, ITensorData d, ITensorAllocator a)
     {
@@ -529,7 +574,7 @@ public class Tensor : IDisposable
     /// </summary>
     public Tensor(int b, int ch, ITensorAllocator a) : this(new TensorShape(b, ch), a) {}
     /// <summary>
-    /// Create an uninitialized Tensor of shape tensorShape `s` and ITensorAllocator `a`.
+    /// Create an uninitialized Tensor of shape `s` and ITensorAllocator `a`.
     /// </summary>
     public Tensor(TensorShape s, ITensorAllocator a)
     {
@@ -555,6 +600,7 @@ public class Tensor : IDisposable
     /// Allocate tensor on device if needed and update data.
     /// By default cached copy of the data will be discarded when doing so, set `forceInvalidateCache` to false to keep the cache.
     /// </summary>
+    // @TODO: rename to PinToUninitializedDevice(uninitializedDataOnDevice ...)
     public void PinToDeviceAndUploadToIt(ITensorData onDevice, bool forceInvalidateCache = true)
     {
         if (m_TensorOnDevice == onDevice && !m_CacheIsDirty)
@@ -574,6 +620,7 @@ public class Tensor : IDisposable
     /// Allocate tensor on device if needed and download data to cache.
     /// See also `PrepareCacheForAccess()`.
     /// </summary>
+    // @TODO: rename to PinToDevice(...)
     public void PinToDeviceAndDownloadFromIt(ITensorData onDevice)
     {
         if (m_TensorOnDevice == onDevice && !m_CacheIsDirty)
@@ -600,6 +647,7 @@ public class Tensor : IDisposable
     /// <summary>
     /// Cast a tensorData to this tensor, transferring ownership of on tensorData device memory to this tensor.
     /// </summary>
+    // @TODO: remove in favor of renamed PinToDevice(...), currently only used in UnsafeArrayCPU
     public void CastOnDevice(ITensorData onDevice)
     {
         if (m_TensorOnDevice == onDevice)
@@ -670,8 +718,9 @@ public class Tensor : IDisposable
     public bool PrepareCacheForAccess(bool blocking = true)
     {
         // non-blocking, schedule download for later
-        if (!blocking && m_TensorOnDevice != null)
-            return m_TensorOnDevice.ScheduleAsyncDownload(length);
+        if (!blocking && m_TensorOnDevice != null && m_Cache == null)
+            if (!m_TensorOnDevice.ScheduleAsyncDownload(length))
+                return false;
 
         // blocking, have to get data now!
         if (m_Cache == null)
@@ -699,23 +748,36 @@ public class Tensor : IDisposable
     // 2) always copy data in Flatten()/Reshape(), remove from Tensor interface
     // 2) always copy data in Flatten()/Reshape(), implement ICloneable for GPU ITensorData
 
-    /// <summary>
-    /// Create a flattened copy of the current Tensor ie of shape [B,1,1,H*W*CH]
-    /// </summary>
-    public Tensor Flatten()
+    private Tensor ShallowCopy(TensorShape newShape, string newName)
     {
-        var newShape = shape.Flatten();
-
         Tensor copy;
         if (m_TensorAllocator != null)
             copy = m_TensorAllocator.Alloc(newShape, m_TensorOnDevice);
         else
             copy = new Tensor(newShape, m_TensorOnDevice);
 
-        copy.name = $"flatten of {name}";
+        copy.name = newName;
         copy.m_Cache = m_Cache;
         copy.m_CacheIsDirty = m_CacheIsDirty;
+
         return copy;
+    }
+
+    /// <summary>
+    /// Create a copy of the current Tensor, sharing data storage with original tensor.
+    /// </summary>
+    public Tensor ShallowCopy()
+    {
+        return ShallowCopy(shape, $"copy of {name}");
+    }
+
+    /// <summary>
+    /// Create a flattened copy of the current Tensor ie of shape [B,1,1,H*W*CH]
+    /// </summary>
+    public Tensor Flatten()
+    {
+        var newShape = shape.Flatten();
+        return ShallowCopy(newShape, $"flatten of {name}");
     }
 
     /// <summary>
@@ -725,34 +787,7 @@ public class Tensor : IDisposable
     public Tensor Reshape(TensorShape newShape)
     {
         Assert.AreEqual(shape.length, newShape.length);
-        Tensor copy;
-        if (m_TensorAllocator != null)
-            copy = m_TensorAllocator.Alloc(newShape, m_TensorOnDevice);
-        else
-            copy = new Tensor(newShape, m_TensorOnDevice);
-
-        copy.name = $"reshape of {name}";
-        copy.m_Cache = m_Cache;
-        copy.m_CacheIsDirty = m_CacheIsDirty;
-        return copy;
-    }
-
-    /// <summary>
-    /// Create a copy of the current Tensor, sharing data storage with original tensor.
-    /// </summary>
-    public Tensor ShallowCopy()
-    {
-        Tensor copy;
-        if (m_TensorAllocator != null)
-            copy = m_TensorAllocator.Alloc(shape, m_TensorOnDevice);
-        else
-            copy = new Tensor(shape, m_TensorOnDevice);
-
-        copy.name = $"copy of {name}";
-        copy.m_Cache = m_Cache;
-        copy.m_CacheIsDirty = m_CacheIsDirty;
-
-        return copy;
+        return ShallowCopy(newShape, $"reshape of {name}");
     }
 
     /// <summary>
@@ -821,6 +856,7 @@ public class Tensor : IDisposable
         m_TensorOnDevice = null;
         m_TensorAllocator = null;
         m_Disposing = false;
+        m_Disposed = true;
     }
 
 
@@ -830,7 +866,8 @@ public class Tensor : IDisposable
     /// </summary>
     public void ToRenderTexture(UnityEngine.RenderTexture target, int batch = 0, int fromChannel = 0, float scale = 1.0f, float bias = 0f)
     {
-        BarracudaTextureUtils.TensorToRenderTexture(this, target, batch, fromChannel, scale, bias);
+        var gpuBackend = new ReferenceComputeOps(ComputeShaderSingleton.Instance.referenceKernels);
+        gpuBackend.TensorToRenderTexture(this, target, batch, fromChannel, scale, bias);
     }
 
     /// <summary>
@@ -838,7 +875,9 @@ public class Tensor : IDisposable
     /// </summary>
     public UnityEngine.RenderTexture ToRenderTexture(int batch = 0, int fromChannel = 0, float scale = 1.0f, float bias = 0f)
     {
-        return BarracudaTextureUtils.TensorToRenderTexture(this, batch, fromChannel, scale, bias);
+        var target = new UnityEngine.RenderTexture(width, height, 0);
+        ToRenderTexture(target, batch, fromChannel, scale, bias);
+        return target;
     }
     #endregion
 
@@ -930,9 +969,8 @@ public class Tensor : IDisposable
 
     public override string ToString()
     {
-        return $"({name} {shape}, alloc: {m_TensorAllocator?.GetType()}, onDevice:{m_TensorOnDevice})";
+        return $"(`{name}` {shape}, alloc: {m_TensorAllocator?.GetType()}, onDevice:{m_TensorOnDevice})";
     }
-
 }
 
 } // namespace Barracuda

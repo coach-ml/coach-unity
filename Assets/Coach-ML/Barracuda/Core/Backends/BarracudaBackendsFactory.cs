@@ -67,10 +67,10 @@ internal class BarracudaBackendsFactory
 
     public static IWorker CreateWorker(WorkerFactory.Type type, Model model, string[] additionalOutputs = null, string[] trimOutputs = null, bool verbose = false)
     {
-        return CreateWorker(type, model, additionalOutputs, trimOutputs, verbose, compareAgainstType:type);
+        return CreateWorker(type, model, additionalOutputs, trimOutputs, verbose, compareAgainstType:type, differenceAsError:false);
     }
 
-    public static IWorker CreateWorker(WorkerFactory.Type type, Model model, string[] additionalOutputs, string[] trimOutputs, bool verbose, WorkerFactory.Type compareAgainstType)
+    public static IWorker CreateWorker(WorkerFactory.Type type, Model model, string[] additionalOutputs, string[] trimOutputs, bool verbose, WorkerFactory.Type compareAgainstType, bool differenceAsError)
     {
         type = ResolveAutoType(type);
         compareAgainstType = ResolveAutoType(compareAgainstType);
@@ -100,7 +100,7 @@ internal class BarracudaBackendsFactory
 
         if (compare)
             ops = new CompareOps(ops,
-                CreateOps(compareAgainstType, allocator, verbose));
+                CreateOps(compareAgainstType, allocator, verbose), differenceAsError);
 
         if (verbose)
             ops = new VerboseOps(ops);
@@ -155,11 +155,18 @@ internal class BarracudaBackendsFactory
             model = newModel;
         }
 
+        model = ModelOptimizer.RemoveNoop(model);
+
         return model;
     }
 
     public static Model ValidateModel(Model model)
     {
+        // validate, model contains no broken links
+        var brokenLinks = ModelAnalyzer.FindBrokenLinks(model);
+        if (brokenLinks.Length > 0)
+            D.LogWarning($"Model contains {brokenLinks.Length} broken links: {string.Join(",", brokenLinks)}");
+
         // validate, all model outputs are unique
         // https://stackoverflow.com/questions/18547354/c-sharp-linq-find-duplicates-in-list
         var duplicateOutputs = model.outputs.GroupBy(x => x)
@@ -169,7 +176,7 @@ internal class BarracudaBackendsFactory
             D.LogWarning($"Output is specified more than once in the model: {o}");
 
         // validate, model contains no unconnected layers
-        var unconnectedOutputs = ModelAnalyzer.FindUnconnectedOutputs(model, model.outputs);
+        var unconnectedOutputs = ModelAnalyzer.FindUnconnectedOutputs(model);
         foreach (var o in unconnectedOutputs)
             D.LogWarning($"Layer is specified as output, but is missing in the model: {o}");
 

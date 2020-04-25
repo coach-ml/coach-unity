@@ -34,6 +34,7 @@ public class GenericWorker : IWorker
 
     // Heuristic size for a small tensor. Small tensors are more likely to be accessed on CPU,
     // thus PeekOutput() for such small tensor will auto schedule non-blocking download from GPU/NPU to CPU
+    const int m_MaxBatchThatAutoTriggersAsyncDownload = 64;
     const int m_MaxFlatWidthThatAutoTriggersAsyncDownload = 1000;
 
     public GenericWorker(Model model, IOps ops, IVars vars, bool verbose = false)
@@ -186,7 +187,7 @@ public class GenericWorker : IWorker
             if (l.type == Layer.Type.Nop)
             {
                 Profiler.BeginSample ("Barracuda.Nop");
-                X = X.ShallowCopy();
+                X = m_Ops.Copy(X);
             }
             // Load const
             else if (l.type == Layer.Type.Load)
@@ -554,6 +555,11 @@ public class GenericWorker : IWorker
                 Profiler.BeginSample ("Barracuda.Transpose");
                 X = m_Ops.Transpose(X);
             }
+            else if (l.type == Layer.Type.Gather)
+            {
+                Profiler.BeginSample ("Barracuda.Gather");
+                X = m_Ops.Gather(inputs, l.axis);
+            }
             else if (l.type == Layer.Type.Squeeze ||
                 l.type == Layer.Type.Unsqueeze)
             {
@@ -562,7 +568,6 @@ public class GenericWorker : IWorker
             else if (l.type == Layer.Type.Concat)
             {
                 Profiler.BeginSample ("Barracuda.Concat");
-
                 X = m_Ops.Concat(inputs, l.axis);
             }
             else if (l.type == Layer.Type.StridedSlice)
@@ -626,7 +631,6 @@ public class GenericWorker : IWorker
                 else if (l.activation == Layer.Activation.PRelu)
                 {
                     Assert.AreEqual(inputs.Length, 2);
-                    Profiler.BeginSample("Barracuda.PRelu");
                     X = m_Ops.PRelu(X, inputs[1]);
                 }
                 else if (
@@ -684,7 +688,7 @@ public class GenericWorker : IWorker
                 }
                 else
                 {
-                    X = X.ShallowCopy();
+                    X = m_Ops.Copy(X);
                 }
             }
             else
@@ -718,9 +722,9 @@ public class GenericWorker : IWorker
         Profiler.BeginSample("Barracuda.PeekOutput");
         var X = m_Vars.PeekOutput(m_DefaultOutputName);
 
-        if (X.flatWidth <=
-            m_MaxFlatWidthThatAutoTriggersAsyncDownload) // tensor is small and most likely will be accessed on CPU,
-            X.PrepareCacheForAccess(false);              // thus schedule non-blocking download from GPU/NPU to CPU
+        if (X.batch <= m_MaxBatchThatAutoTriggersAsyncDownload &&
+            X.flatWidth <= m_MaxFlatWidthThatAutoTriggersAsyncDownload) // tensor is small and most likely will be accessed on CPU,
+            X.PrepareCacheForAccess(blocking:false);                    // thus schedule non-blocking download from GPU/NPU to CPU
         Profiler.EndSample();
 
         return X;
@@ -731,9 +735,9 @@ public class GenericWorker : IWorker
         Profiler.BeginSample("Barracuda.PeekOutput");
         var X = m_Vars.PeekOutput(name);
 
-        if (X.flatWidth <=
-            m_MaxFlatWidthThatAutoTriggersAsyncDownload) // tensor is small and most likely will be accessed on CPU,
-            X.PrepareCacheForAccess(false);              // thus schedule non-blocking download from GPU/NPU to CPU
+        if (X.batch <= m_MaxBatchThatAutoTriggersAsyncDownload &&
+            X.flatWidth <= m_MaxFlatWidthThatAutoTriggersAsyncDownload) // tensor is small and most likely will be accessed on CPU,
+            X.PrepareCacheForAccess(blocking:false);                    // thus schedule non-blocking download from GPU/NPU to CPU
         Profiler.EndSample();
 
         return X;
@@ -776,6 +780,11 @@ public class GenericVars : IVars
     public virtual ITensorAllocator GetAllocator()
     {
         return m_Allocator;
+    }
+
+    protected virtual bool IsTensorOwnedByInternalAllocator(Tensor tensor)
+    {
+        return tensor.allocator == GetAllocator();
     }
 
     protected bool ValidateGlobalInputs(Model model, IDictionary<string, TensorShape> inputShapes)
@@ -902,7 +911,8 @@ public class GenericVars : IVars
                 m_LayerNameToKeepUntilId[key] < layerId &&
                 !m_ModelTensors.Contains(m_TensorsByName[key]))
             {
-                m_TensorsByName[key].Dispose();
+                if (IsTensorOwnedByInternalAllocator(m_TensorsByName[key]))
+                    m_TensorsByName[key].Dispose();
                 m_TensorsByName.Remove(key);
             }
         }
@@ -942,9 +952,7 @@ public class GenericVarsWithReuse : GenericVars
         if (m_Temporary == null)
             return;
 
-        if (m_Temporary.allocator != null)
-            m_Temporary.allocator.Release(m_Temporary, false);
-        else
+        if (IsTensorOwnedByInternalAllocator(m_Temporary))
             m_Temporary.Dispose();
         m_Temporary = null;
     }
@@ -1033,6 +1041,12 @@ public class GenericVarsWithPreallocation : GenericVarsWithReuse, ITensorAllocat
     public override ITensorAllocator GetAllocator()
     {
         return this;
+    }
+    protected override bool IsTensorOwnedByInternalAllocator(Tensor tensor)
+    {
+        var allocator = tensor.allocator;
+        return allocator == m_TemporaryAllocator ||
+               allocator == m_StorageAllocator;
     }
 
     public virtual Tensor Alloc(TensorShape shape)

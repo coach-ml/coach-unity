@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using UnityEngine; // CustomYieldInstruction
 using UnityEngine.Assertions;
 
 namespace Barracuda {
@@ -82,16 +83,14 @@ public interface IWorker : IDisposable
 
     #region Outputs
     /// <summary>
-    /// Returns a reference to tensor from the last layer of the network
+    /// Returns a reference to the first output tensor. This reference will be valid only until the next `Execute()` or `Dispose()` method is called on the worker.
     /// Useful when network has only one output.
-    /// IMPORTANT: follow with TakeOwnership() call, if you want tensor to outlive worker or make tensor copy with DeepCopy()
-    /// see also WorkerExtensions.FetchAndTakeOwnership()
+    /// IMPORTANT: if you want tensor to outlive the worker, use `CopyOutput()` method or follow with `TakeOwnership()` call on the tensor.
     /// </summary>
     Tensor PeekOutput();
     /// <summary>
-    /// Returns a reference to tensor by name.
-    /// IMPORTANT: follow with TakeOwnership() call, if you want tensor to outlive worker or make tensor copy with DeepCopy()
-    /// see also WorkerExtensions.FetchAndTakeOwnership()
+    /// Returns a reference to output tensor by name. This reference will be valid only until the next `Execute()` or `Dispose()` method is called on the worker.
+    /// IMPORTANT: if you want tensor to outlive the worker, use `CopyOutput()` method or follow with `TakeOwnership()` call on the tensor.
     /// </summary>
     Tensor PeekOutput(string name);
     #endregion
@@ -100,6 +99,58 @@ public interface IWorker : IDisposable
     /// Returns a string summary after execution.
     /// </summary>
     string Summary();
+}
+
+public static class WorkerExtensions
+{
+    #region Blocking APIs
+    /// <summary>
+    /// Returns CPU copy of the first output tensor.
+    /// This method is a blocking call and will wait until network execution is completed.
+    /// Useful when network has only one output.
+    /// </summary>
+    public static Tensor CopyOutput(this IWorker worker)
+    {
+        // @TODO: consider using PeekOutput()+DeepCopy() instead of Unpin()+TakeOwnership()
+        var output = worker.PeekOutput();
+        output.Unpin(); // unpin will readback to CPU and
+                        // give allocator a chance to reuse allocated buffer
+        output.TakeOwnership();
+        return output;
+    }
+    /// <summary>
+    /// Returns CPU copy of output tensor by name.
+    /// This method is a blocking call and will wait until network execution is completed.
+    /// </summary>
+    public static Tensor CopyOutput(this IWorker worker, string name)
+    {
+        // @TODO: consider using PeekOutput()+DeepCopy() instead of Unpin()+TakeOwnership()
+        var output = worker.PeekOutput(name);
+        output.Unpin(); // unpin will readback to CPU and
+                        // give allocator a chance to reuse allocated buffer
+        output.TakeOwnership();
+        return output;
+    }
+
+    /// <summary>
+    /// Schedules network execution in one go and waits for result to be available.
+    /// Useful when network has only one input and caller does not need to know input's name.
+    /// </summary>
+    public static Tensor ExecuteAndWaitForCompletion(this IWorker worker, Tensor input)
+    {
+        worker.Execute(input);
+        return worker.CopyOutput();
+    }
+    /// <summary>
+    /// Schedules network execution in one go and waits for result to be available.
+    /// This method supports multiple inputs.
+    /// </summary>
+    public static Tensor ExecuteAndWaitForCompletion(this IWorker worker, IDictionary<string, Tensor> inputs)
+    {
+        worker.Execute(inputs);
+        return worker.CopyOutput();
+    }
+    #endregion
 }
 
 /// <summary>
@@ -120,19 +171,21 @@ public interface ITensorData : IDisposable
     /// <summary>
     /// Schedule an asynchronous download from device memory.
     /// `count` is the number of element to readback.
-    /// return `true` if the request was successfully schedule.
+    /// returns `false` until data from device arrives to CPU and is ready for access.
     /// </summary>
     bool ScheduleAsyncDownload(int count);
     /// <summary>
-    /// Return a copy of the data. This is a blocking call.
-    /// `count` is the number of element to readback.
-    /// Prefer a call to ScheduleAsyncDownload() before.
+    /// Returns an array filled with the values of a tensor.
+    /// Depending on the implementation and underlying device this array might be a copy or direct reference to the tensor values.
+    /// This is a blocking call, unless data from device was requested via `ScheduleAsyncDownload` beforehand and has already arrived.
+    /// `count` is the number of elements to readback. `count` can be less or equal to the number of elements in a specific tensor.
     /// </summary>
     float[] Download(int count);
     /// <summary>
-    /// Return a copy of the full shared tensorData,
-    /// and an offset where this tensorData data is starting.
-    /// Prefer a call to ScheduleAsyncDownload() before.
+    /// Returns an array filled with the values of multiple tenors that share the same tensorData on device.
+    /// This function outputs `offset` from the beginning of the array to location of values for specific tensor. `offset` paramater is specified in float elements.
+    /// Depending on the implementation and underlying device this array might be a copy or direct reference to tensor values.
+    /// This is a blocking call, unless data from device was requested via `ScheduleAsyncDownload` beforehand and has already arrived.
     /// </summary>
     float[] SharedAccess(out int offset);
     /// <summary>
@@ -150,33 +203,58 @@ public class RecurrentState : IDisposable
     private Model m_Model;
     private Tensor[] m_Memories;
 
+    int InferBatchSize(int batchSize, int newBatchSize, string memoryName)
+    {
+        if (batchSize < 0)
+            batchSize = newBatchSize;
+        else
+        {
+            Assert.IsTrue(batchSize != -1);
+            if (batchSize != newBatchSize)
+                throw new ArgumentException("Batch size for all memories of the model must be the same value. " +
+                    $"Expected batch size of {batchSize}, but got {newBatchSize} for memory `{memoryName}`");
+        }
+        return batchSize;
+    }
+
     /// <summary>
     /// Constructs recurrent state for a specific model
     /// `model` is the associated model.
-    /// `batchSize` has to match the batch dimension of the input tensor(s).
+    /// `batchSize` has to match the batch dimension of the input tensor(s). Specifying -1 will use batch size of the memory tensors as declared in the model.
     /// `grabFromInputs` optional dictionary of named tensors that can be used as a memory. If name of the tensor matches the memory, tensor will be removed from the dictionary and used as memory.
     /// </summary>
-    public RecurrentState(Model model, int batchSize = 1, Dictionary<string, Tensor> grabFromInputs = null)
+    public RecurrentState(Model model, int batchSize = -1, Dictionary<string, Tensor> grabFromInputs = null)
     {
-        m_BatchSize = batchSize;
+        bool overrideModelBatchSize = batchSize > 0;
+
         m_Model = model;
         m_Memories = new Tensor[m_Model.memories.Count];
 
         var index = 0;
         foreach (var memory in m_Model.memories)
         {
-            if (grabFromInputs != null && grabFromInputs.ContainsKey(memory.input))
+            var memoryName = memory.input;
+            if (grabFromInputs != null && grabFromInputs.ContainsKey(memoryName))
             {
-                m_Memories[index++] = grabFromInputs[memory.input];
-                grabFromInputs.Remove(memory.input);
+                // steal input from the inputs and use it as a memory
+                var inputTensorToBecomeMemory = grabFromInputs[memoryName];
+                m_Memories[index++] = inputTensorToBecomeMemory;
+                grabFromInputs.Remove(memoryName);
+
+                batchSize = InferBatchSize(batchSize, inputTensorToBecomeMemory.batch, memoryName);
             }
             else
             {
-                Assert.AreEqual(memory.shape.batch, 1);
-                var shape = new TensorShape(memory.shape.batch * batchSize, memory.shape.height, memory.shape.width, memory.shape.channels);
+                if (!overrideModelBatchSize)
+                    batchSize = InferBatchSize(batchSize, memory.shape.batch, memoryName);
+
+                // create memory tensor
+                var shape = new TensorShape(batchSize, memory.shape.height, memory.shape.width, memory.shape.channels);
                 m_Memories[index++] = new Tensor(shape);
             }
         }
+
+        m_BatchSize = batchSize;
     }
 
     ~RecurrentState()
@@ -227,8 +305,7 @@ public class RecurrentState : IDisposable
         var index = 0;
         foreach (var memory in m_Model.memories)
         {
-            // @TODO: consider using PeekOutput()+DeepCopy() instead of Unpin() that happens inside Fetch()
-            var newTensor = worker.Fetch(memory.output);
+            var newTensor = worker.CopyOutput(memory.output);
             Assert.IsTrue(newTensor.tensorOnDevice != m_Memories[index]);
             m_Memories[index].Dispose();
             m_Memories[index] = newTensor;
@@ -280,22 +357,25 @@ public class WorkerFactory
     /// `trimOutputs` are the outputs not discard even if they are specified by the model.
     /// `verbose` will log scheduling of layers execution to the console.
     /// `compareAgainstType` if different than `type` model will be run on those two backend and the result of every layer will be compared, checking for divergence. Great for debugging, but very slow because of the sync needed.
+    /// `differenceAsError` if `compareAgainstType` is used difference will be reported as error is this is true or warning otherwise.
     /// </summary>
-    public static IWorker CreateWorker(Type type, Model model, string[] additionalOutputs, string[] trimOutputs, bool verbose, Type compareAgainstType)
+    public static IWorker CreateWorker(Type type, Model model, string[] additionalOutputs, string[] trimOutputs, bool verbose, Type compareAgainstType, bool differenceAsError=false)
     {
-        return BarracudaBackendsFactory.CreateWorker(type, model, additionalOutputs, trimOutputs, verbose, compareAgainstType);
+        return BarracudaBackendsFactory.CreateWorker(type, model, additionalOutputs, trimOutputs, verbose, compareAgainstType, differenceAsError);
     }
 
     /// <summary>
-    /// Create a worker with explicitly specified backend `type` to execute the given `model`.
-    /// `type` is backend type to use. For example `WorkerFactory.Type.Compute` specifies the fast GPU path.
+    /// Create a worker that will execute `model` using the best backend that is available for a given `device` type.
     /// `model` is the associated model. See ModelLoader.cs.
-    /// `verbose` will log scheduling of layers execution to the console.
-    /// `compareAgainstType` if different than `type` model will be run on those two backend and the result of every layer will be compared, checking for divergence. Great for debugging, but very slow because of the sync needed.
+    /// `additionalOutputs` are the additional outputs to track but not directly specified by the model.
+    /// `trimOutputs` are the outputs not discard even if they are specified by the model.
+    /// `device` is the device type to run worker on. For example `WorkerFactory.Device.GPU` specifies the fast GPU path.
+    /// `verbose` will log scheduling of layers execution to the console (default == false)
     /// </summary>
-    public static IWorker CreateWorker(Type type, Model model, bool verbose, Type compareAgainstType)
+    public static IWorker CreateWorker(Model model, string[] additionalOutputs, string[] trimOutputs, Device device = Device.Auto, bool verbose = false)
     {
-        return CreateWorker(type, model, null, null, verbose, compareAgainstType);
+        var type = GetBestTypeForDevice(device);
+        return CreateWorker(type, model, additionalOutputs, trimOutputs, verbose, type);
     }
 
     /// <summary>
@@ -335,15 +415,37 @@ public class WorkerFactory
     }
 
     /// <summary>
+    /// Create a worker with explicitly specified backend `type` to execute the given `model`.
+    /// `type` is backend type to use. For example `WorkerFactory.Type.Compute` specifies the fast GPU path.
+    /// `model` is the associated model. See ModelLoader.cs.
+    /// `verbose` will log scheduling of layers execution to the console.
+    /// `compareAgainstType` if different than `type` model will be run on those two backend and the result of every layer will be compared, checking for divergence. Great for debugging, but very slow because of the sync needed.
+    /// `differenceAsError` if `compareAgainstType` is used difference will be reported as error is this is true or warning otherwise.
+    /// </summary>
+    public static IWorker CreateWorker(Type type, Model model, bool verbose, Type compareAgainstType, bool differenceAsError=false)
+    {
+        return CreateWorker(type, model, additionalOutputs:null, trimOutputs:null, verbose, compareAgainstType, differenceAsError);
+    }
+
+    /// <summary>
+    /// Create a worker that will execute `model` using the best backend that is available for a given `device` type.
+    /// `model` is the associated model. See ModelLoader.cs.
+    /// `verbose` will log scheduling of layers execution to the console.
+    /// </summary>
+    public static IWorker CreateWorker(Model model, bool verbose = false)
+    {;
+        return CreateWorker(model, Device.Auto, verbose);
+    }
+
+    /// <summary>
     /// Create a worker that will execute `model` using the best backend that is available for a given `device` type.
     /// `model` is the associated model. See ModelLoader.cs.
     /// `device` is the preferred device for execution. For example `WorkerFactory.Device.GPU` specifies the fast GPU path.
     /// `verbose` will log scheduling of layers execution to the console.
     /// </summary>
-    public static IWorker CreateWorker(Model model, Device device = Device.Auto, bool verbose = true)
+    public static IWorker CreateWorker(Model model, Device device, bool verbose = false)
     {
-        var type = GetBestTypeForDevice(device);
-        return CreateWorker(type, model, null, null, verbose, type);
+        return CreateWorker(model, additionalOutputs:null, device, verbose);
     }
 
     /// <summary>
@@ -355,22 +457,7 @@ public class WorkerFactory
     /// </summary>
     public static IWorker CreateWorker(Model model, string[] additionalOutputs, Device device = Device.Auto, bool verbose = false)
     {
-        var type = GetBestTypeForDevice(device);
-        return CreateWorker(type, model, additionalOutputs, null, verbose, type);
-    }
-
-    /// <summary>
-    /// Create a worker that will execute `model` using the best backend that is available for a given `device` type.
-    /// `model` is the associated model. See ModelLoader.cs.
-    /// `additionalOutputs` are the additional outputs to track but not directly specified by the model.
-    /// `trimOutputs` are the outputs not discard even if they are specified by the model.
-    /// `device` is the device type to run worker on. For example `WorkerFactory.Device.GPU` specifies the fast GPU path.
-    /// `verbose` will log scheduling of layers execution to the console (default == false)
-    /// </summary>
-    public static IWorker CreateWorker(Model model, string[] additionalOutputs = null, string[] trimOutputs = null, Device device = Device.Auto, bool verbose = false)
-    {
-        var type = GetBestTypeForDevice(device);
-        return CreateWorker(type, model, additionalOutputs, trimOutputs, verbose, type);
+        return CreateWorker(model, additionalOutputs, trimOutputs:null, device, verbose);
     }
 
     /// <summary>
@@ -410,7 +497,8 @@ public class WorkerFactory
     public static bool IsType(Type type, Device device)
     {
         type = BarracudaBackendsFactory.ResolveAutoType(type);
-        Assert.AreNotEqual(type, Type.Auto);
+        if (type == Type.Auto)
+            throw new ArgumentException($"Auto type is ambiguous in this context and not supported");
         return ((int)type & (int)device) == (int)device;
     }
 
@@ -428,6 +516,69 @@ public class WorkerFactory
     public static Type ValidateType(Type type)
     {
         return BarracudaBackendsFactory.ValidateType(type);
+    }
+}
+
+/// <summary>
+/// Suspends the coroutine execution until worker has completed execution on a device and
+/// contents of the specified tensor are downloaded to the main CPU memory.
+/// `WaitForCompletion` is not necessary and should NOT be used, unless tensor contents are accessed on CPU!
+/// `WaitForCompletion` can only be used with a `yield` statement in coroutines.
+/// </summary>
+public class WaitForCompletion : CustomYieldInstruction
+{
+    private Tensor m_Tensor;
+
+    public override bool keepWaiting
+    {
+        get
+        {
+            bool cpuCacheIsReady = m_Tensor.PrepareCacheForAccess(blocking:false);
+            return !cpuCacheIsReady;
+        }
+    }
+
+    /// <summary>
+    /// Suspends the coroutine execution until worker has completed execution on a device and
+    /// contents of the specified tensor are downloaded to the main CPU memory.
+    /// `tensor` that will be downloaded once worker execution is finished.
+    /// </summary>
+    public WaitForCompletion(Tensor tensor)
+    {
+        m_Tensor = tensor;
+    }
+}
+
+public static class NNModelExtensions
+{
+    /// <summary>
+    /// Create a worker that will execute `asset` using the best backend that is available for a given `device` type.
+    /// This is just a convenience function that internally calls `ModelLoader.Load` followed by ``WorkerFactory.CreateWorker`.
+    /// `asset` is the associated NNModel asset.
+    /// `device` is the preferred device for execution. For example `WorkerFactory.Device.GPU` specifies the fast GPU path.
+    /// `verbose` will log scheduling of layers execution to the console.
+    /// </summary>
+    public static IWorker CreateWorker(this NNModel asset,
+        WorkerFactory.Device device = WorkerFactory.Device.Auto, bool verbose = false)
+    {
+        var model = ModelLoader.Load(asset);
+        return WorkerFactory.CreateWorker(model, device, verbose);
+    }
+
+    /// <summary>
+    /// Create a worker that will execute `asset` using the best backend that is available for a given `device` type.
+    /// This is just a convenience function that internally calls `ModelLoader.Load` followed by ``WorkerFactory.CreateWorker`.
+    /// `asset` is the associated NNModel asset.
+    /// `additionalOutputs` are the additional outputs to track but not directly specified by the model.
+    /// `trimOutputs` are the outputs not discard even if they are specified by the model.
+    /// `device` is the device type to run worker on. For example `WorkerFactory.Device.GPU` specifies the fast GPU path.
+    /// `verbose` will log scheduling of layers execution to the console (default == false)
+    /// </summary>
+    public static IWorker CreateWorker(this NNModel asset,
+        string[] additionalOutputs, string[] trimOutputs, WorkerFactory.Device device = WorkerFactory.Device.Auto, bool verbose = false)
+    {
+        var model = ModelLoader.Load(asset);
+        return WorkerFactory.CreateWorker(model, additionalOutputs, trimOutputs, device, verbose);
     }
 }
 

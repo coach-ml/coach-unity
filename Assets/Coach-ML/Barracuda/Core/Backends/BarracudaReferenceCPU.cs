@@ -88,7 +88,7 @@ public class ArrayTensorData : ITensorData
     public override string ToString()
     {
         return string.Format("(CPU array: {0} max: {1})",
-            GetHashCode(), m_Array.Length);
+            GetHashCode(), m_Array?.Length);
     }
 }
 
@@ -223,8 +223,8 @@ public class ReferenceCPUOps : IOps
     {
         Assert.IsTrue(X.dimensions <= 2);
         Assert.IsTrue(Y.dimensions <= 2);
-        X = X.Flatten();
-        Y = Y.Flatten();
+        X = Flatten(X);
+        Y = Flatten(Y);
 
         if (xTranspose)
             X = Transpose(X);
@@ -819,67 +819,34 @@ public class ReferenceCPUOps : IOps
                 float beta = B[0, 0, 0, c];//B.array[c + B.offset];
 
                 // calc mean
-                float accum = 0.0f;
+                double sum = 0;
                 for (int b = bBegin; b < bEnd; ++b)
                     for (int y = 0; y < height; ++y)
                         for (int x = 0; x < width; ++x)
                         {
-                            float v = X[b, y, x, c
-                                //b * X.height * X.width * X.channels +
-                                //y * X.width * X.channels +
-                                //x * X.channels +
-                                //c +
-                                //X.offset
-                            ];
-                            accum += v;
+                            double v = X[b, y, x, c];
+                            sum += v;
                         }
-                float mean = accum / (float)(width * height);
+                double mean = sum / (width * height);
 
                 // calc variance
-                accum = 0.0f;
+                sum = 0;
                 for (int b = bBegin; b < bEnd; ++b)
                     for (int y = 0; y < height; ++y)
                         for (int x = 0; x < width; ++x)
                         {
-                            float v = X[b, y, x, c
-                                //b * X.height * X.width * X.channels +
-                                //y * X.width * X.channels +
-                                //x * X.channels +
-                                //c +
-                                //X.offset
-                            ];
-                            accum += (v - mean) * (v - mean);
+                            double v = X[b, y, x, c];
+                            sum += (v - mean) * (v - mean);
                         }
-                float var = accum / (float)(width * height);
-
-                // calc normalization factor
-                float invNormFactor = 1f / Mathf.Sqrt(var + epsilon);
-
-                var scale = gamma * invNormFactor;
-                var bias = beta - gamma * mean * invNormFactor;
+                double var = sum / (width * height);
 
                 // apply normalization
                 for (int b = bBegin; b < bEnd; ++b)
                     for (int y = 0; y < height; ++y)
                         for (int x = 0; x < width; ++x)
                         {
-                            float v = X[b, y, x, c
-                                //b * X.height * X.width * X.channels +
-                                //y * X.width * X.channels +
-                                //x * X.channels +
-                                //c +
-                                //X.offset
-                            ];
-
-                            v = v * scale + bias;
-
-                            O[b, y, x, c
-                                //b * O.height * O.width * O.channels +
-                                //y * O.width * O.channels +
-                                //x * O.channels +
-                                //c +
-                                //O.offset
-                            ] = v;
+                            float v = X[b, y, x, c];
+                            O[b, y, x, c] = (float)(gamma * (v - mean) / Math.Sqrt(var + epsilon) + beta);
                         }
             }
         return O;
@@ -1792,20 +1759,76 @@ public class ReferenceCPUOps : IOps
         return O;
     }
 
+    protected virtual Tensor CopyAndReshape(Tensor X, TensorShape shape)
+    {
+        Assert.AreEqual(X.length, shape.length);
+        var O = NewTensor(shape);
+        for (int i = 0; i < X.length; ++i)
+            O[i] = X[i];
+        return O;
+    }
+
+    public virtual Tensor Copy(Tensor X)
+    {
+        // make shallow copy and patch the shape, if already managed by allocator
+        if (X.allocator != null)
+            return X.ShallowCopy();
+
+        return CopyAndReshape(X, X.shape);
+    }
+
     public virtual Tensor Flatten(Tensor X)
     {
-        return X.Flatten();
+        // make shallow copy and patch the shape, if already managed by allocator
+        if (X.allocator != null)
+            return X.Flatten();
+
+        // otherwise deep copy
+        var newShape = X.shape.Flatten();
+        return CopyAndReshape(X, newShape);
     }
 
     public virtual Tensor Reshape(Tensor X, TensorShape newShape)
     {
-        return X.Reshape(newShape);
+        // shallow copy and patch the shape, if already managed by allocator
+        if (X.allocator != null)
+            return X.Reshape(newShape);
+
+        // otherwise deep copy
+        return CopyAndReshape(X, newShape);
+    }
+
+    public virtual Tensor Gather(Tensor[] tensors, int axis)
+    {
+        Tensor X = tensors[0];
+        Tensor indices = tensors[1];
+
+        int[] shape = X.shape.ToArray();
+        shape[axis] = indices.flatWidth;
+
+        var O = NewTensor(new TensorShape(shape));
+
+        for (int b = 0; b < shape[0]; ++b)
+            for (int y = 0; y < shape[1]; ++y)
+                for (int x = 0; x < shape[2]; ++x)
+                    for (int c = 0; c < shape[3]; ++c)
+                    {
+                        if (axis == 0)
+                            O[b, y, x, c] = X[(int)indices[b], y, x, c];
+                        else if (axis == 1)
+                            O[b, y, x, c] = X[b, (int)indices[y], x, c];
+                        else if (axis == 2)
+                            O[b, y, x, c] = X[b, y, (int)indices[x], c];
+                        else
+                            O[b, y, x, c] = X[b, y, x, (int)indices[c]];
+                    }
+        return O;
     }
 
     public virtual Tensor Transpose(Tensor X)
     {
         Assert.IsTrue(X.dimensions <= 2);
-        X = X.Flatten();
+        X = Flatten(X);
 
         var O = NewTensor(X.flatWidth, X.flatHeight);
 

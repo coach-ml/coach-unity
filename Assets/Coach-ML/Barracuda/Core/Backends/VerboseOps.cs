@@ -506,7 +506,13 @@ public class VerboseOps : IOps
         D.Log(X.shape + " T " + O.shape);
         return O;
     }
-
+    Tensor IOps.Gather(Tensor[] tensors, int axis)
+    {
+        var O = m_Ops.Gather(tensors,axis);
+        D.Log("{" + tensors[0].shape + "," + tensors[1].shape + "," + axis + "} # " + O.shape);
+        O.PrintDataPart(32, Prefix + "Gather");
+        return O;
+    }
     Tensor IOps.Concat(Tensor[] tensors, int axis)
     {
         var O = m_Ops.Concat(tensors, axis);
@@ -526,6 +532,13 @@ public class VerboseOps : IOps
         var O = m_Ops.Tile(X, repeats);
         D.Log(X.shape + " % " + O.shape);
         O.PrintDataPart(32, Prefix + "Tile");
+        return O;
+    }
+    Tensor IOps.Copy(Tensor x)
+    {
+        var O = m_Ops.Copy(x);
+        D.Log("!(" + x.shape +" )");
+        O.PrintDataPart(32, "Copy");
         return O;
     }
 

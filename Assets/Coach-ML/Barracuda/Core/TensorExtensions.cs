@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq; // Enumerable.Range(), Enumerable.SequenceEqual()
@@ -20,39 +20,64 @@ public static class TensorExtensions
             X[i] = i;
     }
 
-    static public void TestInit2(this Tensor X, int n = -1)
+    static public void TestInitCos(this Tensor X, int n = -1, float offset = 0.0f)
     {
         if (n < 0)
             n = X.length;
         n = Math.Min(n, X.length);
         for (int i = 0; i < n; ++i)
-            X[i] = 0.1f;
+            X[i] = Mathf.Cos(i + offset);
     }
 
-    static public void TestInitCos(this Tensor X, int n = -1)
+    static public void TestInitValue(this Tensor X, float value=0.1f, int n = -1)
     {
         if (n < 0)
             n = X.length;
         n = Math.Min(n, X.length);
         for (int i = 0; i < n; ++i)
-            X[i] = Mathf.Cos(i);
+            X[i] = value;
+    }
+
+    static public float[] AsFloats(this Tensor x)
+    {
+        return x.readonlyArray;
+    }
+
+    static public int[] AsInts(this Tensor x)
+    {
+        return Array.ConvertAll(x.readonlyArray, (v => (int)v));
+    }
+
+    static public long[] AsLongs(this Tensor x)
+    {
+        return Array.ConvertAll(x.readonlyArray, (v => (long)v));
+    }
+
+    static public string DataToString(this Tensor X, int size = 32)
+    {
+        var str = "";
+        for (int i = 0; i < X.length && i < size; ++i)
+        {
+            str += X[i];
+            str += " ";
+        }
+        if (X.length > size)
+            str += "...";
+        return str;
     }
 
     static public void Print(this Tensor X, string msg = "")
     {
-        D.Log(msg + X.name + " " + X.shape);
+        if (msg.Length > 0)
+            msg += " ";
+        D.Log($"{msg}{X.name} {X.shape}");
     }
 
     static public void PrintDataPart(this Tensor X, int size, string msg = "")
     {
         if (msg.Length > 0)
             msg += " ";
-        for (int i = 0; i < X.length && i < size; ++i)
-        {
-            msg += X[i];
-            msg += " ";
-        }
-        D.Log(msg);
+        D.Log($"{msg}{X.DataToString(size)}");
     }
 
     static public bool Equals(this Tensor X, Tensor Y)
@@ -145,7 +170,15 @@ public static class TensorExtensions
         }
         return result.ToArray();
     }
+    static public TensorShape Gather(TensorShape[] shapes, int axis)
+    {
+        TensorShape X = shapes[0];
+        TensorShape indices = shapes[1];
+        int[] shape = X.ToArray();
+        shape[axis] = indices.length;
 
+        return new TensorShape(shape);
+    }
     static public TensorShape Concat(TensorShape[] shapes, int axis)
     {
         if (shapes.Length == 0)

@@ -81,6 +81,7 @@ public class Layer
         Transpose = 202,
         Squeeze = 203,              // TODO: NOT IMPLEMENTED
         Unsqueeze = 204,            // TODO: NOT IMPLEMENTED
+        Gather = 205,
 
         Concat = 210,
         StridedSlice = 211,
@@ -116,6 +117,7 @@ public class Layer
         Ceil = 102,
         Clip = 103,
         Floor = 104,
+        Round = 105,                // TODO: NOT IMPLEMENTED
 
         Reciprocal = 110,
         Sqrt = 111,
@@ -199,11 +201,11 @@ public class Layer
         return ($"name:{name}, activation:{activation}, inputs:[{string.Join(",", inputs)}], " +
             $"pad:[{string.Join(",", pad)}], stride:[{string.Join(",", stride)}], pool:[{string.Join(",", pool)}], " +
             $"alpha:{alpha}, beta:{beta}, axis:{axis}, " +
-            $"consts:[{string.Join(", ", datasets.Select(x => $"{x.name} {x.shape}"))}]".Replace(name+"/","").Replace(name+" ","")).
+            $"weights:[{string.Join(", ", datasets.Select(x => $"{x.name} {x.shape}"))}]".Replace(name+"/","").Replace(name+" ","")).
             Replace("activation:None, ", "").Replace("inputs:[], ", "").Replace("pad:[], ", "").
             Replace("stride:[], ", "").Replace("stride:[1,1], ", "").Replace("pool:[], ", "").
             Replace("alpha:1, ", "").Replace("beta:0, ", "").Replace("axis:-1, ", "").
-            Replace("consts:[]", "");
+            Replace("weights:[]", "");
     }
 }
 
@@ -269,10 +271,12 @@ public class Model
 
     public override string ToString()
     {
+        var totalUniqueWeights = layers.Select(l => l.weights).Distinct().Sum(d => (long)d.Length);
+
         return $"inputs: [{string.Join(", ", inputs.Select(i => $"{i.name} ({string.Join(",", i.shape)})"))}], " +
             $"memories: [{string.Join(", ", memories.Select(m => $"{m.input} {m.shape} {m.output}"))}], " +
             $"outputs: [{string.Join(", ", outputs)}] " +
-            $"\n{layers.Count} layers, {layers.Sum(l => l.weights.Length)} weights: ...\n{string.Join("\n", layers.Select(i => $"{i.type} ({i})"))}";
+            $"\n{layers.Count} layers, {totalUniqueWeights:n0} weights: \n{string.Join("\n", layers.Select(i => $"{i.type} ({i})"))}";
     }
 }
 
