@@ -1,4 +1,5 @@
 ﻿using Coach;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
@@ -12,14 +13,21 @@ public class Example : MonoBehaviour
     public Text resultLabel;
     public Text buttonText;
 
+    public List<Texture> textures;
+    
+    int index = 0;
+    public Text paginationLabel;
+
     bool sync = true;
     
     async void Start()
     {
-        await init();
+        image.texture = textures[0];
+        paginationLabel.text = $"1/{this.textures.Count}";
+        await Init();
     }
 
-    async Task init()
+    async Task Init()
     {
         var coach = new CoachClient(isDebug: true);
         coach = await coach.Login("A2botdrxAn68aZh8Twwwt2sPBJdCfH3zO02QDMt0");
@@ -34,13 +42,36 @@ public class Example : MonoBehaviour
         model.CleanUp();
     }
 
-    public void toggleSync()
+    public void ToggleSync()
     {
         sync = !sync;
         buttonText.text = "Using " + (sync ? "sync" : "async");
 
         model.CleanUp();
-        init();
+        Init();
+    }
+
+    public void MoveRight()
+    {
+        if (index + 1 < this.textures.Count) {
+            index++;
+            paginationLabel.text = $"{index + 1}/{this.textures.Count}";
+            image.texture = this.textures[index];
+
+            texture = image.texture as Texture2D;
+        }
+    }
+
+    public void MoveLeft()
+    {
+        if (index - 1 >= 0)
+        {
+            index--;
+            paginationLabel.text = $"{index + 1}/{this.textures.Count}";
+            image.texture = this.textures[index];
+
+            texture = image.texture as Texture2D;
+        }
     }
 
     private void Update()
