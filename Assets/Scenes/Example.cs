@@ -18,7 +18,6 @@ public class Example : MonoBehaviour
     int index = 0;
     public Text paginationLabel;
 
-    // async prediction by default
     bool sync = false;
     
     async void Start()

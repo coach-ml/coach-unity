@@ -4,10 +4,10 @@ using System.IO;
 using System.Linq;
 using System.Collections.Generic;
 using UnityEngine;
-using Barracuda;
 using UnityEngine.Networking;
 using System.Net;
 using System.Collections;
+using Unity.Barracuda;
 
 namespace Coach
 {
@@ -264,7 +264,7 @@ namespace Coach
         {
             this.Model = model;
 
-            this.Worker = WorkerFactory.CreateComputeWorker(model.Model);
+            this.Worker = WorkerFactory.CreateWorker(WorkerFactory.Type.CSharpBurst, model.Model);
             this.Worker.PrepareForInput(new Dictionary<string, TensorShape>()
             {
                 { model.InputName, new TensorShape(1, model.ImageDims.InputSize, model.ImageDims.InputSize, 3) }
@@ -284,22 +284,9 @@ namespace Coach
             this.Worker.Execute(this.Tensor);
         }
 
-        public IEnumerator ExecuteAsync(Texture2D texture)
-        {
-            this.Texture = texture;
-            this.Tensor = ImageUtil.TensorFromTexture(texture, Model.ImageDims);
-            return this.Worker.ExecuteAsync(this.Tensor);
-        }
-
-        public IEnumerator ExecuteAsync(Tensor tensor)
-        {
-            this.Tensor = tensor;
-            return this.Worker.ExecuteAsync(this.Tensor);
-        }
-
         public float GetAsyncProgress()
         {
-            return this.Worker.GetAsyncProgress();
+            return this.Worker.scheduleProgress;
         }
 
         public bool IsAvailable()
@@ -320,6 +307,48 @@ namespace Coach
         public Tensor PeekOutput()
         {
             return Worker.PeekOutput(Model.OutputName);
+        }
+
+        public Tensor ExecuteAsync(Tensor tensor, int syncEveryNthLayer = 5)
+        {
+            this.Tensor = tensor;
+
+            var executor = Worker.StartManualSchedule(this.Tensor);
+            var it = 0;
+            bool hasMoreWork;
+
+            do
+            {
+                hasMoreWork = executor.MoveNext();
+                if (++it % syncEveryNthLayer == 0)
+                {
+                    Worker.FlushSchedule();
+                    Worker.ResetAsyncProgress();
+                }
+
+            } while (hasMoreWork);
+
+            return Worker.PeekOutput();
+        }
+
+        public Tensor ExecuteAsync(Texture2D texture, int syncEveryNthLayer = 5)
+        {
+            this.Texture = texture;
+            this.Tensor = ImageUtil.TensorFromTexture(texture, Model.ImageDims);
+            
+            var executor = Worker.StartManualSchedule(this.Tensor);
+            var it = 0;
+            bool hasMoreWork;
+
+            do
+            {
+                hasMoreWork = executor.MoveNext();
+                if (++it % syncEveryNthLayer == 0)
+                    Worker.FlushSchedule();
+
+            } while (hasMoreWork);
+
+            return Worker.PeekOutput();
         }
 
         public void Reset(bool destroyTexture = false)
